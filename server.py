@@ -1,17 +1,17 @@
 from fastapi import FastAPI, Request, HTTPException
-import uvicorn
 import logging
 import json
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Union, Literal
 import httpx
 import os
+from pathlib import Path
 from fastapi.responses import JSONResponse, StreamingResponse
 import litellm
+import uvicorn
 import uuid
 import time
 from dotenv import load_dotenv
-import re
 from datetime import datetime
 import sys
 
@@ -26,7 +26,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configure uvicorn to be quieter
-import uvicorn
 # Tell uvicorn's loggers to be quiet
 logging.getLogger("uvicorn").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
@@ -97,29 +96,125 @@ PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
 # Get model mapping configuration from environment
 # Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-5.3-codex")
+SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-5.2")
+
+# Google Code Assist OAuth support
+USE_GEMINI_OAUTH = os.environ.get("USE_GEMINI_OAUTH", "False").lower() == "true"
+GEMINI_OAUTH_CREDS_PATH = Path(os.environ.get("GEMINI_OAUTH_CREDS_PATH", "~/.gemini/oauth_creds.json")).expanduser()
+
+def _load_oauth_creds() -> Optional[Dict[str, Any]]:
+    """Load OAuth credentials from ~/.gemini/oauth_creds.json."""
+    if not GEMINI_OAUTH_CREDS_PATH.exists():
+        logger.warning(f"OAuth creds file not found: {GEMINI_OAUTH_CREDS_PATH}")
+        return None
+    try:
+        return json.loads(GEMINI_OAUTH_CREDS_PATH.read_text())
+    except Exception as e:
+        logger.error(f"Failed to load OAuth creds: {e}")
+        return None
+
+def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
+    """Refresh the OAuth access token using the refresh_token. Returns new access_token."""
+    refresh_token = creds.get("refresh_token")
+    client_id = creds.get("client_id")
+    client_secret = creds.get("client_secret")
+    if not refresh_token or not client_id or not client_secret:
+        logger.error("OAuth creds missing required fields (refresh_token, client_id, client_secret)")
+        return None
+    try:
+        resp = httpx.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        new_access_token = data["access_token"]
+        # Update the creds file with new token
+        creds["access_token"] = new_access_token
+        if "expires_in" in data:
+            creds["expiry_date"] = int(time.time() * 1000) + data["expires_in"] * 1000
+        GEMINI_OAUTH_CREDS_PATH.write_text(json.dumps(creds, indent=2))
+        logger.info("OAuth token refreshed successfully")
+        return new_access_token
+    except Exception as e:
+        logger.error(f"OAuth token refresh failed: {e}")
+        return None
+
+def get_gemini_oauth_access_token() -> Optional[str]:
+    """Get a valid OAuth access token, refreshing if needed."""
+    creds = _load_oauth_creds()
+    if not creds:
+        return None
+
+    # Check if token is still valid (with 60s buffer)
+    expiry = creds.get("expiry_date")
+    access_token = creds.get("access_token")
+    now_ms = int(time.time() * 1000)
+
+    if access_token and expiry and (expiry - now_ms) > 60_000:
+        return access_token
+
+    # Token expired or missing — refresh
+    return _refresh_oauth_token(creds) or access_token
+
+if USE_GEMINI_OAUTH:
+    logger.info(f"Gemini OAuth mode enabled, creds path: {GEMINI_OAUTH_CREDS_PATH}")
+    # Validate on startup
+    _startup_token = get_gemini_oauth_access_token()
+    if _startup_token:
+        logger.info("Gemini OAuth: startup token validation OK")
+    else:
+        logger.warning("Gemini OAuth: could not get access token on startup — check ~/.gemini/oauth_creds.json")
 
 # List of OpenAI models
 OPENAI_MODELS = [
-    "o3-mini",
-    "o1",
-    "o1-mini",
-    "o1-pro",
-    "gpt-4.5-preview",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.2-chat",
+    "gpt-5.2-pro",
+    "gpt-5.2",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5.1-chat",
+    "gpt-5.1",
+    "gpt-5-codex",
+    "gpt-5-chat",
+    "gpt-5-pro",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
     "gpt-4o",
-    "gpt-4o-audio-preview",
-    "chatgpt-4o-latest",
     "gpt-4o-mini",
-    "gpt-4o-mini-audio-preview",
-    "gpt-4.1",  # Added default big model
-    "gpt-4.1-mini" # Added default small model
+    "gpt-4o-audio-preview",
+    "gpt-4-turbo",
+    "o4-mini",
+    "o4-mini-high",
+    "o3",
+    "o3-pro",
+    "o3-mini",
+    "o3-mini-high",
+    "o1",
+    "o1-pro"
 ]
 
 # List of Gemini models
 GEMINI_MODELS = [
+    "gemini-3.1-pro-preview"
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-2.5-pro",
     "gemini-2.5-flash",
-    "gemini-2.5-pro"
+    "gemini-2.5-flash-lite"
 ]
 
 # Helper function to clean schema for Gemini
@@ -1132,7 +1227,17 @@ async def create_message(
             else:
                 logger.debug(f"Using OpenAI API key for model: {request.model}")
         elif request.model.startswith("gemini/"):
-            if USE_VERTEX_AUTH:
+            if USE_GEMINI_OAUTH:
+                oauth_token = get_gemini_oauth_access_token()
+                if not oauth_token:
+                    raise HTTPException(status_code=401, detail="Gemini OAuth: could not obtain access token. Check ~/.gemini/oauth_creds.json")
+                # Use Gemini's OpenAI-compatible endpoint — it accepts Bearer auth
+                raw_model = request.model.replace("gemini/", "", 1)
+                litellm_request["model"] = f"openai/{raw_model}"
+                litellm_request["api_key"] = oauth_token
+                litellm_request["api_base"] = "https://generativelanguage.googleapis.com/v1beta/openai"
+                logger.debug(f"Using Gemini OAuth (OpenAI-compat endpoint) for model: {raw_model}")
+            elif USE_VERTEX_AUTH:
                 litellm_request["vertex_project"] = VERTEX_PROJECT
                 litellm_request["vertex_location"] = VERTEX_LOCATION
                 litellm_request["custom_llm_provider"] = "vertex_ai"
