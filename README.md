@@ -58,7 +58,7 @@ Then start with [docker compose](https://docs.docker.com/compose/) (preferred):
 ```yml
 services:
   proxy:
-    image: ghcr.io/BergaBruh/claude-code-proxy:latest
+    image: ghcr.io/bergabruh/claude-code-proxy:latest
     restart: unless-stopped
     volumes:
       - ./config.yaml:/app/config.yaml:ro
