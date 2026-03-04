@@ -24,7 +24,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
 1. **Clone this repository**:
    ```bash
-   git clone https://github.com/BergaBruh/claude-code-proxy.git
+   git clone https://github.com/bergabruh/claude-code-proxy.git
    cd claude-code-proxy
    ```
 
@@ -48,7 +48,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
 Download the example environment file and edit it:
 ```bash
-curl -O .env https://raw.githubusercontent.com/BergaBruh/claude-code-proxy/refs/heads/main/.env.example
+curl -O .env https://raw.githubusercontent.com/bergabruh/claude-code-proxy/refs/heads/main/.env.example
 ```
 
 Then start with [docker compose](https://docs.docker.com/compose/) (preferred):
