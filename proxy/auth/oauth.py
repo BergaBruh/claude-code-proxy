@@ -26,23 +26,54 @@ def _load_oauth_creds() -> Optional[Dict[str, Any]]:
 def _extract_gemini_cli_oauth_creds() -> tuple:
     """Extract OAuth client_id and client_secret from gemini-cli's installed source."""
     import subprocess, re
+    from pathlib import Path
+
+    oauth_path = None
+
+    # Method 1: require.resolve (works when gemini-cli-core is a top-level global package)
     try:
-        # Find gemini-cli's oauth2.js which contains the public client credentials
         result = subprocess.run(
             ["node", "-e", "console.log(require.resolve('@google/gemini-cli-core/dist/src/code_assist/oauth2.js'))"],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
-            oauth_path = __import__('pathlib').Path(result.stdout.strip())
-            if oauth_path.exists():
-                content = oauth_path.read_text()
-                cid = re.search(r'clientId\s*[:=]\s*["\']([^"\']+)["\']', content)
-                csec = re.search(r'clientSecret\s*[:=]\s*["\']([^"\']+)["\']', content)
-                if cid and csec:
-                    logger.info("Extracted OAuth credentials from gemini-cli")
-                    return cid.group(1), csec.group(1)
+            candidate = Path(result.stdout.strip())
+            if candidate.exists():
+                oauth_path = candidate
     except Exception as e:
-        logger.debug(f"Could not extract creds from gemini-cli: {e}")
+        logger.debug(f"require.resolve failed: {e}")
+
+    # Method 2: Look inside gemini-cli's own node_modules (sudo/global install)
+    if not oauth_path:
+        try:
+            result = subprocess.run(
+                ["npm", "root", "-g"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                candidate = Path(result.stdout.strip()) / "@google" / "gemini-cli" / "node_modules" / "@google" / "gemini-cli-core" / "dist" / "src" / "code_assist" / "oauth2.js"
+                if candidate.exists():
+                    oauth_path = candidate
+        except Exception as e:
+            logger.debug(f"npm root -g fallback failed: {e}")
+
+    if oauth_path:
+        try:
+            content = oauth_path.read_text()
+            cid = re.search(r"OAUTH_CLIENT_ID\s*=\s*['\"]([^'\"]+)['\"]", content)
+            csec = re.search(r"OAUTH_CLIENT_SECRET\s*=\s*['\"]([^'\"]+)['\"]", content)
+            if cid and csec:
+                logger.info(f"Extracted OAuth credentials from gemini-cli ({oauth_path})")
+                return cid.group(1), csec.group(1)
+            # Fallback to older format
+            cid = re.search(r'clientId\s*[:=]\s*["\']([^"\']+)["\']', content)
+            csec = re.search(r'clientSecret\s*[:=]\s*["\']([^"\']+)["\']', content)
+            if cid and csec:
+                logger.info(f"Extracted OAuth credentials from gemini-cli ({oauth_path})")
+                return cid.group(1), csec.group(1)
+        except Exception as e:
+            logger.debug(f"Could not read oauth2.js: {e}")
+
     return None, None
 
 

@@ -84,6 +84,18 @@ ANTHROPIC_BASE_URL=http://localhost:8082 claude
 
 That's it — your Claude Code client will now use the configured backend models through the proxy.
 
+#### Per-request provider override
+
+If you have multiple providers configured, you can select one per-request by setting `ANTHROPIC_AUTH_TOKEN` to a provider name:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=google claude   # → Gemini
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=openai claude   # → OpenAI
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=anthropic claude # → Anthropic
+```
+
+This overrides `PREFERRED_PROVIDER` for that session. If `ANTHROPIC_AUTH_TOKEN` is not set or is not a known provider name, the global `PREFERRED_PROVIDER` is used.
+
 ## Configuration
 
 | Variable | Description | Required |
@@ -149,7 +161,7 @@ BIG_MODEL="gemini-3.1-pro-preview"
 MEDIUM_MODEL="gemini-3-flash-preview"
 SMALL_MODEL="gemini-2.5-flash-lite"
 ```
-> Requires [gemini-cli](https://github.com/google-gemini/gemini-cli): `npm i -g @google/gemini-cli && gemini` (run once to authenticate). Uses the Google Code Assist endpoint — no API key or GCP billing needed.
+> Requires [gemini-cli](https://github.com/google-gemini/gemini-cli): `npm i -g @google/gemini-cli && gemini` (run once to authenticate). Uses the Google Code Assist endpoint — no API key or GCP billing needed. OAuth tokens are refreshed automatically — the proxy extracts `client_id`/`client_secret` from gemini-cli (works with both user and sudo installs).
 
 **Google with Vertex AI (ADC)**
 ```dotenv

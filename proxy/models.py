@@ -10,19 +10,16 @@ from proxy.config import (
 logger = logging.getLogger("proxy")
 
 
-def _map_model(v, info, *, label="MODEL"):
-    """Shared model-mapping logic used by MessagesRequest and TokenCountRequest validators."""
-    original_model = v
-    new_model = v
+def map_model_for_provider(model_name: str, provider: str) -> str:
+    """Map an Anthropic model name to the correct backend model for *provider*.
 
-    logger.debug(
-        f"📋 {label} VALIDATION: Original='{original_model}', "
-        f"Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', "
-        f"MEDIUM='{MEDIUM_MODEL}', SMALL='{SMALL_MODEL}'"
-    )
+    This is the core mapping logic, usable both from Pydantic validators and
+    from route handlers (for per-request provider overrides).
+    """
+    new_model = model_name
 
     # Remove provider prefixes for easier matching
-    clean_v = v
+    clean_v = model_name
     if clean_v.startswith('anthropic/'):
         clean_v = clean_v[10:]
     elif clean_v.startswith('openai/'):
@@ -30,56 +27,59 @@ def _map_model(v, info, *, label="MODEL"):
     elif clean_v.startswith('gemini/'):
         clean_v = clean_v[7:]
 
-    # --- Mapping Logic --- START ---
     mapped = False
-    if PREFERRED_PROVIDER == "anthropic":
-        # Don't remap to big/small models, just add the prefix
+    if provider == "anthropic":
         new_model = f"anthropic/{clean_v}"
         mapped = True
-
-    # Map Haiku to SMALL_MODEL based on provider preference
     elif 'haiku' in clean_v.lower():
-        if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+        if provider == "google" and SMALL_MODEL in GEMINI_MODELS:
             new_model = f"gemini/{SMALL_MODEL}"
-            mapped = True
         else:
             new_model = f"openai/{SMALL_MODEL}"
-            mapped = True
-
-    # Map Sonnet to MEDIUM_MODEL based on provider preference
+        mapped = True
     elif 'sonnet' in clean_v.lower():
-        if PREFERRED_PROVIDER == "google" and MEDIUM_MODEL in GEMINI_MODELS:
+        if provider == "google" and MEDIUM_MODEL in GEMINI_MODELS:
             new_model = f"gemini/{MEDIUM_MODEL}"
-            mapped = True
         else:
             new_model = f"openai/{MEDIUM_MODEL}"
-            mapped = True
-
-    # Map Opus to BIG_MODEL based on provider preference
+        mapped = True
     elif 'opus' in clean_v.lower():
-        if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
+        if provider == "google" and BIG_MODEL in GEMINI_MODELS:
             new_model = f"gemini/{BIG_MODEL}"
-            mapped = True
         else:
             new_model = f"openai/{BIG_MODEL}"
-            mapped = True
-
-    # Add prefixes to non-mapped models if they match known lists
-    elif not mapped:
-        if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
+        mapped = True
+    else:
+        if clean_v in GEMINI_MODELS and not model_name.startswith('gemini/'):
             new_model = f"gemini/{clean_v}"
             mapped = True
-        elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
+        elif clean_v in OPENAI_MODELS and not model_name.startswith('openai/'):
             new_model = f"openai/{clean_v}"
             mapped = True
-    # --- Mapping Logic --- END ---
 
-    if mapped:
+    if not mapped:
+        new_model = model_name
+
+    return new_model
+
+
+def _map_model(v, info, *, label="MODEL"):
+    """Shared model-mapping logic used by MessagesRequest and TokenCountRequest validators."""
+    original_model = v
+
+    logger.debug(
+        f"📋 {label} VALIDATION: Original='{original_model}', "
+        f"Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', "
+        f"MEDIUM='{MEDIUM_MODEL}', SMALL='{SMALL_MODEL}'"
+    )
+
+    new_model = map_model_for_provider(v, PREFERRED_PROVIDER)
+
+    if new_model != v:
         logger.debug(f"📌 {label} MAPPING: '{original_model}' ➡️ '{new_model}'")
     else:
         if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
             logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
-        new_model = v
 
     # Store the original model in the values dictionary
     values = info.data

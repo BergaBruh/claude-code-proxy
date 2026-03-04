@@ -12,7 +12,7 @@ from proxy.config import (
     OPENAI_BASE_URL, USE_GEMINI_OAUTH, USE_VERTEX_AUTH,
     VERTEX_PROJECT, VERTEX_LOCATION,
 )
-from proxy.models import MessagesRequest, TokenCountRequest, TokenCountResponse
+from proxy.models import MessagesRequest, TokenCountRequest, TokenCountResponse, map_model_for_provider
 from proxy.converters import convert_anthropic_to_litellm, convert_litellm_to_anthropic
 from proxy.streaming import handle_streaming
 from proxy.auth.oauth import get_gemini_oauth_access_token
@@ -26,6 +26,18 @@ from proxy.providers.code_assist import _code_assist_stream_as_openai, _code_ass
 from proxy.logging_config import log_request_beautifully, log_error_beautifully
 
 logger = logging.getLogger("proxy")
+
+KNOWN_PROVIDERS = {"openai", "google", "anthropic"}
+
+
+def _extract_provider_override(raw_request: Request):
+    """Return a provider name if the Authorization bearer token is a known provider, else None."""
+    auth = raw_request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip().lower()
+        if token in KNOWN_PROVIDERS:
+            return token
+    return None
 
 
 def register_routes(app):
@@ -43,6 +55,14 @@ def register_routes(app):
             # Parse the raw body as JSON since it's bytes
             body_json = json.loads(body.decode('utf-8'))
             original_model = body_json.get("model", "unknown")
+
+            # Per-request provider override via Authorization header
+            provider_override = _extract_provider_override(raw_request)
+            if provider_override:
+                request.model = map_model_for_provider(
+                    request.original_model or original_model, provider_override
+                )
+                logger.debug(f"🔀 Provider override '{provider_override}': remapped model to '{request.model}'")
 
             # Get the display name for logging, just the model name without provider prefix
             display_model = original_model
@@ -366,6 +386,14 @@ def register_routes(app):
         try:
             # Log the incoming token count request
             original_model = request.original_model or request.model
+
+            # Per-request provider override via Authorization header
+            provider_override = _extract_provider_override(raw_request)
+            if provider_override:
+                request.model = map_model_for_provider(
+                    request.original_model or original_model, provider_override
+                )
+                logger.debug(f"🔀 Provider override '{provider_override}': remapped model to '{request.model}'")
 
             # Get the display name for logging, just the model name without provider prefix
             display_model = original_model
