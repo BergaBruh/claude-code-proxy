@@ -56,7 +56,7 @@ Then start with [docker compose](https://docs.docker.com/compose/) (preferred):
 ```yml
 services:
   proxy:
-    image: ghcr.io/BergaBruh/claude-code-proxy:latest
+    image: ghcr.io/bergabruh/claude-code-proxy:latest
     restart: unless-stopped
     env_file: .env
     ports:
@@ -73,7 +73,7 @@ docker run -d --env-file .env -p 8082:8082 ghcr.io/bergabruh/claude-code-proxy:l
 > ```bash
 > docker run -d --env-file .env -p 8082:8082 \
 >   -v ~/.gemini/oauth_creds.json:/root/.gemini/oauth_creds.json:ro \
->   ghcr.io/BergaBruh/claude-code-proxy:latest
+>   ghcr.io/bergabruh/claude-code-proxy:latest
 > ```
 
 ### Using with Claude Code
