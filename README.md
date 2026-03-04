@@ -24,7 +24,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
 1. **Clone this repository**:
    ```bash
-   git clone https://github.com/BergaBruh/claude-code-proxy.git
+   git clone https://github.com/bergabruh/claude-code-proxy.git
    cd claude-code-proxy
    ```
 
@@ -48,7 +48,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
 Download the example environment file and edit it:
 ```bash
-curl -O .env https://raw.githubusercontent.com/BergaBruh/claude-code-proxy/refs/heads/main/.env.example
+curl -O .env https://raw.githubusercontent.com/bergabruh/claude-code-proxy/refs/heads/main/.env.example
 ```
 
 Then start with [docker compose](https://docs.docker.com/compose/) (preferred):
@@ -83,6 +83,18 @@ ANTHROPIC_BASE_URL=http://localhost:8082 claude
 ```
 
 That's it — your Claude Code client will now use the configured backend models through the proxy.
+
+#### Per-request provider override
+
+If you have multiple providers configured, you can select one per-request by setting `ANTHROPIC_AUTH_TOKEN` to a provider name:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=google claude   # → Gemini
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=openai claude   # → OpenAI
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=anthropic claude # → Anthropic
+```
+
+This overrides `PREFERRED_PROVIDER` for that session. If `ANTHROPIC_AUTH_TOKEN` is not set or is not a known provider name, the global `PREFERRED_PROVIDER` is used.
 
 ## Configuration
 
@@ -149,7 +161,7 @@ BIG_MODEL="gemini-3.1-pro-preview"
 MEDIUM_MODEL="gemini-3-flash-preview"
 SMALL_MODEL="gemini-2.5-flash-lite"
 ```
-> Requires [gemini-cli](https://github.com/google-gemini/gemini-cli): `npm i -g @google/gemini-cli && gemini` (run once to authenticate). Uses the Google Code Assist endpoint — no API key or GCP billing needed.
+> Requires [gemini-cli](https://github.com/google-gemini/gemini-cli): `npm i -g @google/gemini-cli && gemini` (run once to authenticate). Uses the Google Code Assist endpoint — no API key or GCP billing needed. OAuth tokens are refreshed automatically — the proxy extracts `client_id`/`client_secret` from gemini-cli (works with both user and sudo installs).
 
 **Google with Vertex AI (ADC)**
 ```dotenv
