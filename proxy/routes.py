@@ -443,10 +443,6 @@ def register_routes(app):
                     "messages": converted_request["messages"],
                 }
 
-                # Add custom base URL for OpenAI models if configured
-                if request.model.startswith("openai/") and OPENAI_BASE_URL:
-                    token_counter_args["base_url"] = OPENAI_BASE_URL
-
                 # Count tokens
                 token_count = token_counter(**token_counter_args)
 

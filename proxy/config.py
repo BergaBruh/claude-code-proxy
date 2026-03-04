@@ -100,6 +100,27 @@ CODE_ASSIST_API_VERSION = _get("CODE_ASSIST_API_VERSION", default="v1internal")
 
 DEBUG = _get_bool("DEBUG", "debug")
 
+# ── Per-provider model lookup ─────────────────────────────────────────────────
+
+def get_models_for_provider(provider: str) -> tuple:
+    """Return (big, medium, small) model names for any provider, reading from YAML."""
+    is_google = provider == "google" or provider.startswith("google-")
+    if is_google:
+        d_big, d_med, d_small = "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash-lite"
+    elif provider == "openai-compat":
+        d_big, d_med, d_small = "llama3.3", "llama3.2", "llama3.2"
+    else:
+        d_big, d_med, d_small = "gpt-5.3-codex", "gpt-5.2", "gpt-5-mini"
+
+    section = _yaml.get(provider, {})
+    models = section.get("models", {}) if isinstance(section, dict) else {}
+    return (
+        models.get("big",    d_big),
+        models.get("medium", d_med),
+        models.get("small",  d_small),
+    )
+
+
 # ── Model lists ───────────────────────────────────────────────────────────────
 
 OPENAI_MODELS = [
