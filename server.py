@@ -14,22 +14,29 @@ import time
 from dotenv import load_dotenv
 from datetime import datetime
 import sys
+import copy
 
 # Load environment variables from .env file
 load_dotenv()
 
+# Debug mode — set DEBUG=true to enable verbose logging (litellm debug included)
+DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+
 # Configure logging
 logging.basicConfig(
-    level=logging.WARN,  # Change to INFO level to show more details
+    level=logging.DEBUG if DEBUG else logging.WARN,
     format='%(asctime)s - %(levelname)s - %(message)s',
 )
 logger = logging.getLogger(__name__)
 
 # Configure uvicorn to be quieter
-# Tell uvicorn's loggers to be quiet
 logging.getLogger("uvicorn").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+
+if DEBUG:
+    import litellm as _litellm
+    _litellm._turn_on_debug()
 
 # Create a filter to block any log messages containing specific strings
 class MessageFilter(logging.Filter):
@@ -76,6 +83,9 @@ for handler in logger.handlers:
 
 app = FastAPI()
 
+# Silently drop params unsupported by the target provider (e.g. top_p for some OpenAI models)
+litellm.drop_params = True
+
 # Get API keys from environment
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -96,8 +106,9 @@ PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
 # Get model mapping configuration from environment
 # Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-5.3-codex")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-5.2")
+BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-5.3-codex")      # claude opus  → big
+MEDIUM_MODEL = os.environ.get("MEDIUM_MODEL", "gpt-5.2")       # claude sonnet → medium
+SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-5-mini")      # claude haiku  → small
 
 # Google Code Assist OAuth support
 USE_GEMINI_OAUTH = os.environ.get("USE_GEMINI_OAUTH", "False").lower() == "true"
@@ -114,13 +125,57 @@ def _load_oauth_creds() -> Optional[Dict[str, Any]]:
         logger.error(f"Failed to load OAuth creds: {e}")
         return None
 
+def _extract_gemini_cli_oauth_creds() -> tuple:
+    """Extract OAuth client_id and client_secret from gemini-cli's installed source."""
+    import subprocess, re
+    try:
+        # Find gemini-cli's oauth2.js which contains the public client credentials
+        result = subprocess.run(
+            ["node", "-e", "console.log(require.resolve('@google/gemini-cli-core/dist/src/code_assist/oauth2.js'))"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            oauth_path = Path(result.stdout.strip())
+            if oauth_path.exists():
+                content = oauth_path.read_text()
+                cid = re.search(r'clientId\s*[:=]\s*["\']([^"\']+)["\']', content)
+                csec = re.search(r'clientSecret\s*[:=]\s*["\']([^"\']+)["\']', content)
+                if cid and csec:
+                    logger.info("Extracted OAuth credentials from gemini-cli")
+                    return cid.group(1), csec.group(1)
+    except Exception as e:
+        logger.debug(f"Could not extract creds from gemini-cli: {e}")
+    return None, None
+
+# Cache extracted credentials
+_gemini_cli_client_id, _gemini_cli_client_secret = None, None
+
+def _get_gemini_oauth_client_creds() -> tuple:
+    """Get OAuth client_id and client_secret from env vars or gemini-cli."""
+    global _gemini_cli_client_id, _gemini_cli_client_secret
+    client_id = os.environ.get("GEMINI_OAUTH_CLIENT_ID")
+    client_secret = os.environ.get("GEMINI_OAUTH_CLIENT_SECRET")
+    if client_id and client_secret:
+        return client_id, client_secret
+    # Try extracting from gemini-cli once
+    if _gemini_cli_client_id is None:
+        _gemini_cli_client_id, _gemini_cli_client_secret = _extract_gemini_cli_oauth_creds()
+    if _gemini_cli_client_id and _gemini_cli_client_secret:
+        return _gemini_cli_client_id, _gemini_cli_client_secret
+    return None, None
+
 def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
     """Refresh the OAuth access token using the refresh_token. Returns new access_token."""
     refresh_token = creds.get("refresh_token")
     client_id = creds.get("client_id")
     client_secret = creds.get("client_secret")
-    if not refresh_token or not client_id or not client_secret:
-        logger.error("OAuth creds missing required fields (refresh_token, client_id, client_secret)")
+    if not (client_id and client_secret):
+        client_id, client_secret = _get_gemini_oauth_client_creds()
+    if not (client_id and client_secret):
+        logger.error("OAuth client_id/client_secret not found. Set GEMINI_OAUTH_CLIENT_ID and GEMINI_OAUTH_CLIENT_SECRET env vars, or install gemini-cli (npm i -g @google/gemini-cli)")
+        return None
+    if not refresh_token:
+        logger.error("OAuth creds missing refresh_token — run `gemini` to re-authenticate")
         return None
     try:
         resp = httpx.post(
@@ -152,23 +207,314 @@ def get_gemini_oauth_access_token() -> Optional[str]:
     if not creds:
         return None
 
-    # Check if token is still valid (with 60s buffer)
-    expiry = creds.get("expiry_date")
     access_token = creds.get("access_token")
+    expiry = creds.get("expiry_date")
     now_ms = int(time.time() * 1000)
 
-    if access_token and expiry and (expiry - now_ms) > 60_000:
+    # If no expiry info, trust the token as-is (e.g. gemini-cli stores only access_token)
+    if access_token and (not expiry or (expiry - now_ms) > 60_000):
         return access_token
 
-    # Token expired or missing — refresh
-    return _refresh_oauth_token(creds) or access_token
+    # Token expired — try to refresh
+    refreshed = _refresh_oauth_token(creds)
+    if refreshed:
+        return refreshed
+    if access_token:
+        logger.warning("OAuth token may be expired and could not be refreshed. Run `gemini` to re-authenticate.")
+    return access_token
+
+CODE_ASSIST_ENDPOINT = os.environ.get("CODE_ASSIST_ENDPOINT", "https://cloudcode-pa.googleapis.com")
+CODE_ASSIST_API_VERSION = os.environ.get("CODE_ASSIST_API_VERSION", "v1internal")
+_code_assist_project: Optional[str] = None
+
+def _get_code_assist_project(token: str) -> str:
+    """Get (and cache) the Code Assist project ID via loadCodeAssist."""
+    global _code_assist_project
+    if _code_assist_project:
+        return _code_assist_project
+    resp = httpx.post(
+        f"{CODE_ASSIST_ENDPOINT}/{CODE_ASSIST_API_VERSION}:loadCodeAssist",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"metadata": {"ideType": "IDE_UNSPECIFIED", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"}},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    project = resp.json().get("cloudaicompanionProject")
+    if not project:
+        raise RuntimeError("Code Assist did not return a project ID. Ensure your Google account is set up for Gemini Code Assist.")
+    _code_assist_project = project
+    logger.info(f"Code Assist project ID: {project}")
+    return project
+
+
+def _openai_messages_to_gemini(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Convert OpenAI-format messages to Gemini native format (contents + systemInstruction)."""
+    system_parts: List[Dict[str, Any]] = []
+    contents: List[Dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+
+        if role == "system":
+            # System messages → systemInstruction
+            if isinstance(content, str):
+                system_parts.append({"text": content})
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, str):
+                        system_parts.append({"text": item})
+                    elif isinstance(item, dict) and item.get("type") == "text":
+                        system_parts.append({"text": item.get("text", "")})
+            continue
+
+        gemini_role = "model" if role == "assistant" else "user"
+        parts: List[Dict[str, Any]] = []
+
+        # Handle tool calls from assistant
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            for tc in tool_calls:
+                func = tc.get("function", {})
+                args = func.get("arguments", "{}")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {"raw": args}
+                parts.append({
+                    "functionCall": {
+                        "name": func.get("name", ""),
+                        "args": args,
+                    }
+                })
+
+        # Handle tool role (function result)
+        if role == "tool":
+            tool_call_id = msg.get("tool_call_id", "")
+            response_data = content
+            if isinstance(response_data, str):
+                try:
+                    response_data = json.loads(response_data)
+                except (json.JSONDecodeError, TypeError):
+                    response_data = {"result": response_data}
+            parts.append({
+                "functionResponse": {
+                    "name": msg.get("name", tool_call_id),
+                    "response": response_data if isinstance(response_data, dict) else {"result": str(response_data)},
+                }
+            })
+            gemini_role = "user"  # Gemini expects function responses as user role
+
+        # Handle regular content
+        if content and role != "tool":
+            if isinstance(content, str):
+                parts.append({"text": content})
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, str):
+                        parts.append({"text": item})
+                    elif isinstance(item, dict):
+                        if item.get("type") == "text":
+                            parts.append({"text": item.get("text", "")})
+                        elif item.get("type") == "image_url":
+                            url_data = item.get("image_url", {})
+                            url = url_data.get("url", "") if isinstance(url_data, dict) else str(url_data)
+                            if url.startswith("data:"):
+                                # data URI: data:image/png;base64,<data>
+                                mime_end = url.index(";")
+                                mime_type = url[5:mime_end]
+                                b64_data = url[url.index(",") + 1:]
+                                parts.append({"inlineData": {"mimeType": mime_type, "data": b64_data}})
+
+        if parts:
+            # Gemini requires alternating user/model roles; merge consecutive same-role
+            if contents and contents[-1]["role"] == gemini_role:
+                contents[-1]["parts"].extend(parts)
+            else:
+                contents.append({"role": gemini_role, "parts": parts})
+
+    result: Dict[str, Any] = {"contents": contents}
+    if system_parts:
+        result["systemInstruction"] = {"role": "user", "parts": system_parts}
+    return result
+
+
+def _openai_tools_to_gemini(tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+    """Convert OpenAI-format tool definitions to Gemini format."""
+    if not tools:
+        return None
+    declarations = []
+    for tool in tools:
+        if tool.get("type") != "function":
+            continue
+        func = tool.get("function", {})
+        decl: Dict[str, Any] = {"name": func.get("name", ""), "description": func.get("description", "")}
+        params = func.get("parameters")
+        if params:
+            cleaned = clean_gemini_schema(copy.deepcopy(params))
+            decl["parameters"] = cleaned
+        declarations.append(decl)
+    if not declarations:
+        return None
+    logger.debug(f"Converted {len(declarations)} tools to Gemini format")
+    return [{"functionDeclarations": declarations}]
+
+
+def _gemini_response_to_litellm_format(gemini_resp: Dict[str, Any], model: str) -> Dict[str, Any]:
+    """Convert a Code Assist response to a litellm/OpenAI-like object for convert_litellm_to_anthropic."""
+    inner = gemini_resp.get("response", gemini_resp)
+    candidates = inner.get("candidates", [])
+    usage_meta = inner.get("usageMetadata", {})
+
+    choices = []
+    for cand in candidates:
+        content = cand.get("content", {})
+        parts = content.get("parts", [])
+        text_parts = []
+        tool_calls = []
+        for part in parts:
+            if "text" in part:
+                text_parts.append(part["text"])
+            elif "functionCall" in part:
+                fc = part["functionCall"]
+                tool_calls.append({
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "type": "function",
+                    "function": {
+                        "name": fc.get("name", ""),
+                        "arguments": json.dumps(fc.get("args", {})),
+                    }
+                })
+
+        finish_map = {"STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "stop",
+                      "RECITATION": "stop", "OTHER": "stop"}
+        finish_reason = finish_map.get(cand.get("finishReason", "STOP"), "stop")
+
+        message: Dict[str, Any] = {"role": "assistant", "content": "".join(text_parts) if text_parts else None}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+            if not message["content"]:
+                finish_reason = "tool_calls"
+
+        choices.append({"index": 0, "message": message, "finish_reason": finish_reason})
+
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": choices,
+        "usage": {
+            "prompt_tokens": usage_meta.get("promptTokenCount", 0),
+            "completion_tokens": usage_meta.get("candidatesTokenCount", 0),
+            "total_tokens": usage_meta.get("totalTokenCount", 0),
+        }
+    }
+
+
+async def _code_assist_stream(token: str, project: str, model: str, gemini_request: Dict[str, Any]):
+    """Call Code Assist streamGenerateContent and yield SSE chunks as litellm-style delta dicts."""
+    url = f"{CODE_ASSIST_ENDPOINT}/{CODE_ASSIST_API_VERSION}:streamGenerateContent"
+    body = {"model": model, "project": project, "request": gemini_request}
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=15)) as client:
+        async with client.stream(
+            "POST", url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            content=json.dumps(body),
+            params={"alt": "sse"},
+        ) as resp:
+            if resp.status_code != 200:
+                error_body = await resp.aread()
+                raise RuntimeError(f"Code Assist stream error {resp.status_code}: {error_body.decode()}")
+            buffer = ""
+            async for raw_chunk in resp.aiter_text():
+                buffer += raw_chunk
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if line.startswith("data: "):
+                        data = json.loads(line[6:])
+                        yield data
+
+
+async def _code_assist_stream_as_openai(token: str, project: str, model: str, gemini_request: Dict[str, Any]):
+    """Wrap Code Assist streaming into OpenAI-compatible chunk objects for handle_streaming."""
+    from types import SimpleNamespace
+
+    async for data in _code_assist_stream(token, project, model, gemini_request):
+        inner = data.get("response", data)
+        candidates = inner.get("candidates", [])
+        usage_meta = inner.get("usageMetadata")
+
+        for cand in candidates:
+            content = cand.get("content", {})
+            parts = content.get("parts", [])
+            finish_reason_raw = cand.get("finishReason")
+
+            for part in parts:
+                delta = SimpleNamespace()
+                delta.content = part.get("text")
+                delta.tool_calls = None
+                delta.role = None
+
+                if "functionCall" in part:
+                    fc = part["functionCall"]
+                    tc = SimpleNamespace()
+                    tc.index = 0
+                    tc.id = f"call_{uuid.uuid4().hex[:8]}"
+                    tc.type = "function"
+                    tc.function = SimpleNamespace()
+                    tc.function.name = fc.get("name", "")
+                    tc.function.arguments = json.dumps(fc.get("args", {}))
+                    delta.tool_calls = [tc]
+                    delta.content = None
+
+                finish_map = {"STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "stop", "RECITATION": "stop"}
+                choice = SimpleNamespace()
+                choice.delta = delta
+                choice.finish_reason = finish_map.get(finish_reason_raw) if finish_reason_raw else None
+                choice.index = 0
+
+                chunk = SimpleNamespace()
+                chunk.choices = [choice]
+                chunk.usage = None
+                if usage_meta:
+                    chunk.usage = SimpleNamespace()
+                    chunk.usage.prompt_tokens = usage_meta.get("promptTokenCount", 0)
+                    chunk.usage.completion_tokens = usage_meta.get("candidatesTokenCount", 0)
+                    chunk.usage.total_tokens = usage_meta.get("totalTokenCount", 0)
+
+                yield chunk
+
+
+async def _code_assist_generate(token: str, project: str, model: str, gemini_request: Dict[str, Any]) -> Dict[str, Any]:
+    """Call Code Assist generateContent (non-streaming)."""
+    url = f"{CODE_ASSIST_ENDPOINT}/{CODE_ASSIST_API_VERSION}:generateContent"
+    body = {"model": model, "project": project, "request": gemini_request}
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(600, connect=15)) as client:
+        resp = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            content=json.dumps(body),
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"Code Assist error {resp.status_code}: {resp.text}")
+        return resp.json()
+
 
 if USE_GEMINI_OAUTH:
     logger.info(f"Gemini OAuth mode enabled, creds path: {GEMINI_OAUTH_CREDS_PATH}")
-    # Validate on startup
+    # Validate on startup: get token and project
     _startup_token = get_gemini_oauth_access_token()
     if _startup_token:
         logger.info("Gemini OAuth: startup token validation OK")
+        try:
+            _get_code_assist_project(_startup_token)
+        except Exception as e:
+            logger.warning(f"Gemini OAuth: failed to get Code Assist project on startup: {e}")
     else:
         logger.warning("Gemini OAuth: could not get access token on startup — check ~/.gemini/oauth_creds.json")
 
@@ -209,21 +555,50 @@ OPENAI_MODELS = [
 
 # List of Gemini models
 GEMINI_MODELS = [
-    "gemini-3.1-pro-preview"
+    "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
-    "gemini-3.1-flash-lite-preview",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
-    "gemini-2.5-flash-lite"
+    "gemini-2.5-flash-lite",
 ]
 
 # Helper function to clean schema for Gemini
 def clean_gemini_schema(schema: Any) -> Any:
-    """Recursively removes unsupported fields from a JSON schema for Gemini."""
+    """Recursively removes unsupported fields from a JSON schema for Gemini / Code Assist."""
     if isinstance(schema, dict):
-        # Remove specific keys unsupported by Gemini tool parameters
-        schema.pop("additionalProperties", None)
-        schema.pop("default", None)
+        # Remove all keys unsupported by Gemini tool parameters
+        unsupported_keys = {
+            "$schema", "additionalProperties", "default",
+            "exclusiveMinimum", "exclusiveMaximum",
+            "propertyNames", "const", "oneOf",
+            "patternProperties", "dependencies", "if", "then", "else",
+            "allOf", "not", "minProperties", "maxProperties",
+            "minContains", "maxContains", "contentMediaType", "contentEncoding",
+            "$id", "$ref", "$comment", "$defs", "definitions",
+            "examples", "readOnly", "writeOnly", "deprecated",
+            "uniqueItems", "additionalItems",
+        }
+        for key in unsupported_keys:
+            schema.pop(key, None)
+
+        # Convert anyOf to enum where possible (e.g. anyOf with const values)
+        if "anyOf" in schema:
+            # Check if it's a simple type union like anyOf: [{type: "string"}, {type: "number"}]
+            # or const-based enum like anyOf: [{const: "a"}, {const: "b"}]
+            any_of = schema["anyOf"]
+            if isinstance(any_of, list):
+                const_values = [item.get("const") for item in any_of if isinstance(item, dict) and "const" in item]
+                if const_values and len(const_values) == len(any_of):
+                    # All entries are const — convert to enum
+                    schema.pop("anyOf")
+                    schema["enum"] = const_values
+                    if not schema.get("type"):
+                        # Infer type from values
+                        if all(isinstance(v, str) for v in const_values):
+                            schema["type"] = "string"
+                else:
+                    # Just drop anyOf — Gemini doesn't support it
+                    schema.pop("anyOf")
 
         # Check for unsupported 'format' in string types
         if schema.get("type") == "string" and "format" in schema:
@@ -233,10 +608,9 @@ def clean_gemini_schema(schema: Any) -> Any:
                 schema.pop("format")
 
         # Recursively clean nested schemas (properties, items, etc.)
-        for key, value in list(schema.items()): # Use list() to allow modification during iteration
+        for key, value in list(schema.items()):
             schema[key] = clean_gemini_schema(value)
     elif isinstance(schema, list):
-        # Recursively clean items in a list
         return [clean_gemini_schema(item) for item in schema]
     return schema
 
@@ -297,7 +671,7 @@ class MessagesRequest(BaseModel):
         original_model = v
         new_model = v # Default to original value
 
-        logger.debug(f"📋 MODEL VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'")
+        logger.debug(f"📋 MODEL VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', MEDIUM='{MEDIUM_MODEL}', SMALL='{SMALL_MODEL}'")
 
         # Remove provider prefixes for easier matching
         clean_v = v
@@ -324,8 +698,17 @@ class MessagesRequest(BaseModel):
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
-        # Map Sonnet to BIG_MODEL based on provider preference
+        # Map Sonnet to MEDIUM_MODEL based on provider preference
         elif 'sonnet' in clean_v.lower():
+            if PREFERRED_PROVIDER == "google" and MEDIUM_MODEL in GEMINI_MODELS:
+                new_model = f"gemini/{MEDIUM_MODEL}"
+                mapped = True
+            else:
+                new_model = f"openai/{MEDIUM_MODEL}"
+                mapped = True
+
+        # Map Opus to BIG_MODEL based on provider preference
+        elif 'opus' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
@@ -375,7 +758,7 @@ class TokenCountRequest(BaseModel):
         original_model = v
         new_model = v # Default to original value
 
-        logger.debug(f"📋 TOKEN COUNT VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'")
+        logger.debug(f"📋 TOKEN COUNT VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', MEDIUM='{MEDIUM_MODEL}', SMALL='{SMALL_MODEL}'")
 
         # Remove provider prefixes for easier matching
         clean_v = v
@@ -397,8 +780,17 @@ class TokenCountRequest(BaseModel):
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
-        # Map Sonnet to BIG_MODEL based on provider preference
+        # Map Sonnet to MEDIUM_MODEL based on provider preference
         elif 'sonnet' in clean_v.lower():
+            if PREFERRED_PROVIDER == "google" and MEDIUM_MODEL in GEMINI_MODELS:
+                new_model = f"gemini/{MEDIUM_MODEL}"
+                mapped = True
+            else:
+                new_model = f"openai/{MEDIUM_MODEL}"
+                mapped = True
+
+        # Map Opus to BIG_MODEL based on provider preference
+        elif 'opus' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
@@ -1222,7 +1614,7 @@ async def create_message(
             litellm_request["api_key"] = OPENAI_API_KEY
             # Use custom OpenAI base URL if configured
             if OPENAI_BASE_URL:
-                litellm_request["api_base"] = OPENAI_BASE_URL
+                litellm_request["base_url"] = OPENAI_BASE_URL
                 logger.debug(f"Using OpenAI API key and custom base URL {OPENAI_BASE_URL} for model: {request.model}")
             else:
                 logger.debug(f"Using OpenAI API key for model: {request.model}")
@@ -1231,12 +1623,11 @@ async def create_message(
                 oauth_token = get_gemini_oauth_access_token()
                 if not oauth_token:
                     raise HTTPException(status_code=401, detail="Gemini OAuth: could not obtain access token. Check ~/.gemini/oauth_creds.json")
-                # Use Gemini's OpenAI-compatible endpoint — it accepts Bearer auth
+                # Bypass litellm — use Code Assist API (cloudcode-pa.googleapis.com)
                 raw_model = request.model.replace("gemini/", "", 1)
-                litellm_request["model"] = f"openai/{raw_model}"
-                litellm_request["api_key"] = oauth_token
-                litellm_request["api_base"] = "https://generativelanguage.googleapis.com/v1beta/openai"
-                logger.debug(f"Using Gemini OAuth (OpenAI-compat endpoint) for model: {raw_model}")
+                litellm_request["_gemini_oauth_token"] = oauth_token
+                litellm_request["_gemini_oauth_model"] = raw_model
+                logger.debug(f"Using Gemini OAuth (Code Assist endpoint) for model: {raw_model}")
             elif USE_VERTEX_AUTH:
                 litellm_request["vertex_project"] = VERTEX_PROJECT
                 litellm_request["vertex_location"] = VERTEX_LOCATION
@@ -1390,45 +1781,77 @@ async def create_message(
         # Only log basic info about the request, not the full details
         logger.debug(f"Request for model: {litellm_request.get('model')}, stream: {litellm_request.get('stream', False)}")
         
+        # Extract Gemini OAuth metadata (not valid litellm params)
+        gemini_oauth_token = litellm_request.pop("_gemini_oauth_token", None)
+        gemini_oauth_model = litellm_request.pop("_gemini_oauth_model", None)
+
+        num_tools = len(request.tools) if request.tools else 0
+        log_request_beautifully(
+            "POST",
+            raw_request.url.path,
+            display_model,
+            litellm_request.get('model'),
+            len(litellm_request['messages']),
+            num_tools,
+            200
+        )
+
         # Handle streaming mode
         if request.stream:
-            # Use LiteLLM for streaming
-            num_tools = len(request.tools) if request.tools else 0
-            
-            log_request_beautifully(
-                "POST", 
-                raw_request.url.path, 
-                display_model, 
-                litellm_request.get('model'),
-                len(litellm_request['messages']),
-                num_tools,
-                200  # Assuming success at this point
-            )
-            # Ensure we use the async version for streaming
-            response_generator = await litellm.acompletion(**litellm_request)
-            
+            if gemini_oauth_token:
+                project = _get_code_assist_project(gemini_oauth_token)
+                gemini_req = _openai_messages_to_gemini(litellm_request["messages"])
+                gemini_tools = _openai_tools_to_gemini(litellm_request.get("tools"))
+                if gemini_tools:
+                    gemini_req["tools"] = gemini_tools
+                gen_config: Dict[str, Any] = {}
+                if litellm_request.get("max_tokens"):
+                    gen_config["maxOutputTokens"] = litellm_request["max_tokens"]
+                if litellm_request.get("temperature") is not None:
+                    gen_config["temperature"] = litellm_request["temperature"]
+                if litellm_request.get("top_p") is not None:
+                    gen_config["topP"] = litellm_request["top_p"]
+                if gen_config:
+                    gemini_req["generationConfig"] = gen_config
+
+                response_generator = _code_assist_stream_as_openai(
+                    gemini_oauth_token, project, gemini_oauth_model, gemini_req
+                )
+            else:
+                response_generator = await litellm.acompletion(**litellm_request)
+
             return StreamingResponse(
                 handle_streaming(response_generator, request),
                 media_type="text/event-stream"
             )
         else:
-            # Use LiteLLM for regular completion
-            num_tools = len(request.tools) if request.tools else 0
-            
-            log_request_beautifully(
-                "POST", 
-                raw_request.url.path, 
-                display_model, 
-                litellm_request.get('model'),
-                len(litellm_request['messages']),
-                num_tools,
-                200  # Assuming success at this point
-            )
             start_time = time.time()
-            litellm_response = litellm.completion(**litellm_request)
+            if gemini_oauth_token:
+                project = _get_code_assist_project(gemini_oauth_token)
+                gemini_req = _openai_messages_to_gemini(litellm_request["messages"])
+                gemini_tools = _openai_tools_to_gemini(litellm_request.get("tools"))
+                if gemini_tools:
+                    gemini_req["tools"] = gemini_tools
+                gen_config: Dict[str, Any] = {}
+                if litellm_request.get("max_tokens"):
+                    gen_config["maxOutputTokens"] = litellm_request["max_tokens"]
+                if litellm_request.get("temperature") is not None:
+                    gen_config["temperature"] = litellm_request["temperature"]
+                if litellm_request.get("top_p") is not None:
+                    gen_config["topP"] = litellm_request["top_p"]
+                if gen_config:
+                    gemini_req["generationConfig"] = gen_config
+
+                raw_resp = await _code_assist_generate(
+                    gemini_oauth_token, project, gemini_oauth_model, gemini_req
+                )
+                # Convert to a dict that convert_litellm_to_anthropic can handle
+                litellm_response = _gemini_response_to_litellm_format(raw_resp, gemini_oauth_model)
+            else:
+                litellm_response = litellm.completion(**litellm_request)
             logger.debug(f"✅ RESPONSE RECEIVED: Model={litellm_request.get('model')}, Time={time.time() - start_time:.2f}s")
-            
-            # Convert LiteLLM response to Anthropic format
+
+            # Convert response to Anthropic format
             anthropic_response = convert_litellm_to_anthropic(litellm_response, request)
             
             return anthropic_response
@@ -1456,22 +1879,22 @@ async def create_message(
                     error_details[key] = str(value)
         
         # Helper function to safely serialize objects for JSON
-        def sanitize_for_json(obj):
-            """递归地清理对象使其可以JSON序列化"""
+        def sanitize_for_json(obj, _depth=0):
+            if _depth > 8:
+                return str(obj)
+            if isinstance(obj, (str, int, float, bool, type(None))):
+                return obj
             if isinstance(obj, dict):
-                return {k: sanitize_for_json(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [sanitize_for_json(item) for item in obj]
-            elif hasattr(obj, '__dict__'):
-                return sanitize_for_json(obj.__dict__)
-            elif hasattr(obj, 'text'):
-                return str(obj.text)
-            else:
-                try:
-                    json.dumps(obj)
-                    return obj
-                except (TypeError, ValueError):
-                    return str(obj)
+                return {k: sanitize_for_json(v, _depth + 1) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [sanitize_for_json(item, _depth + 1) for item in obj]
+            if hasattr(obj, '__dict__'):
+                return sanitize_for_json(obj.__dict__, _depth + 1)
+            try:
+                json.dumps(obj)
+                return obj
+            except (TypeError, ValueError):
+                return str(obj)
         
         # Log all error details with safe serialization
         sanitized_details = sanitize_for_json(error_details)
@@ -1548,7 +1971,7 @@ async def count_tokens(
             
             # Add custom base URL for OpenAI models if configured
             if request.model.startswith("openai/") and OPENAI_BASE_URL:
-                token_counter_args["api_base"] = OPENAI_BASE_URL
+                token_counter_args["base_url"] = OPENAI_BASE_URL
             
             # Count tokens
             token_count = token_counter(**token_counter_args)

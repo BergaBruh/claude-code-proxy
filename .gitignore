@@ -36,3 +36,6 @@ ENV/
 .vscode/
 *.swp
 *.swo
+
+# Claude provides guidance
+CLAUDE.md
