@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional
 
 import httpx
 
-from proxy.config import GEMINI_OAUTH_CREDS_PATH
+from proxy.config import GEMINI_OAUTH_CREDS_PATH, GEMINI_OAUTH_CLIENT_ID, GEMINI_OAUTH_CLIENT_SECRET
 
 logger = logging.getLogger("proxy")
 
@@ -84,8 +84,8 @@ _gemini_cli_client_id, _gemini_cli_client_secret = None, None
 def _get_gemini_oauth_client_creds() -> tuple:
     """Get OAuth client_id and client_secret from env vars or gemini-cli."""
     global _gemini_cli_client_id, _gemini_cli_client_secret
-    client_id = os.environ.get("GEMINI_OAUTH_CLIENT_ID")
-    client_secret = os.environ.get("GEMINI_OAUTH_CLIENT_SECRET")
+    client_id = GEMINI_OAUTH_CLIENT_ID
+    client_secret = GEMINI_OAUTH_CLIENT_SECRET
     if client_id and client_secret:
         return client_id, client_secret
     # Try extracting from gemini-cli once

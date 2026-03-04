@@ -1,8 +1,8 @@
 # Anthropic API Proxy for Gemini & OpenAI Models
 
-**Use Anthropic clients (like Claude Code) with Gemini, OpenAI, or direct Anthropic backends.**
+**Use Anthropic clients (like Claude Code) with Gemini, OpenAI, local LLMs, or direct Anthropic backends.**
 
-A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthropic models themselves (a transparent proxy of sorts), all via LiteLLM.
+A proxy server that lets you use Anthropic clients with Gemini, OpenAI, OpenAI-compatible APIs (Ollama, LM Studio, vLLM, etc.), or Anthropic models themselves, all via LiteLLM.
 
 ![Anthropic API Proxy](pic.png)
 
@@ -13,6 +13,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 - [uv](https://github.com/astral-sh/uv) installed (for running from source)
 - At least one of the following:
   - OpenAI API key
+  - OpenAI-compatible API (Ollama, LM Studio, vLLM, llama.cpp, etc.)
   - Google AI Studio (Gemini) API key
   - Google Code Assist via OAuth (free, no API key needed — requires [gemini-cli](https://github.com/google-gemini/gemini-cli))
   - Google Cloud Project with Vertex AI API enabled (for ADC auth)
@@ -33,11 +34,11 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
-3. **Configure Environment Variables**:
+3. **Configure**:
    ```bash
-   cp .env.example .env
+   cp config.example.yaml config.yaml
    ```
-   Edit `.env` — see [Configuration](#configuration) below.
+   Edit `config.yaml` — see [Configuration](#configuration) below.
 
 4. **Run the server**:
    ```bash
@@ -46,9 +47,10 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
 #### Docker
 
-Download the example environment file and edit it:
+Download the example config and edit it:
 ```bash
-curl -O .env https://raw.githubusercontent.com/bergabruh/claude-code-proxy/refs/heads/main/.env.example
+curl -O https://raw.githubusercontent.com/bergabruh/claude-code-proxy/refs/heads/main/config.example.yaml
+mv config.example.yaml config.yaml
 ```
 
 Then start with [docker compose](https://docs.docker.com/compose/) (preferred):
@@ -58,22 +60,19 @@ services:
   proxy:
     image: ghcr.io/bergabruh/claude-code-proxy:latest
     restart: unless-stopped
-    env_file: .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
     ports:
       - 8082:8082
 ```
 
-Or with a command:
+> Environment variables always override `config.yaml` values, so you can use `env_file` or `environment:` in Docker Compose instead of mounting the config file.
 
-```bash
-docker run -d --env-file .env -p 8082:8082 ghcr.io/bergabruh/claude-code-proxy:latest
-```
-
-> **Note:** For Google OAuth mode, mount the credentials file into the container:
-> ```bash
-> docker run -d --env-file .env -p 8082:8082 \
->   -v ~/.gemini/oauth_creds.json:/root/.gemini/oauth_creds.json:ro \
->   ghcr.io/bergabruh/claude-code-proxy:latest
+> **Note:** For Google OAuth mode, also mount the credentials file:
+> ```yml
+>     volumes:
+>       - ./config.yaml:/app/config.yaml:ro
+>       - ~/.gemini/oauth_creds.json:/root/.gemini/oauth_creds.json:ro
 > ```
 
 ### Using with Claude Code
@@ -89,41 +88,59 @@ That's it — your Claude Code client will now use the configured backend models
 If you have multiple providers configured, you can select one per-request by setting `ANTHROPIC_AUTH_TOKEN` to a provider name:
 
 ```bash
-ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=google claude   # → Gemini
-ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=openai claude   # → OpenAI
-ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=anthropic claude # → Anthropic
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=google-oauth claude  # → Gemini via OAuth
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=openai claude         # → OpenAI
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=openai-compat claude  # → local LLM
+ANTHROPIC_BASE_URL=http://localhost:8082 ANTHROPIC_AUTH_TOKEN=anthropic claude      # → Anthropic
 ```
 
-This overrides `PREFERRED_PROVIDER` for that session. If `ANTHROPIC_AUTH_TOKEN` is not set or is not a known provider name, the global `PREFERRED_PROVIDER` is used.
+This overrides `provider` for that session. If `ANTHROPIC_AUTH_TOKEN` is not set or is not a known provider name, the global `provider` setting is used.
 
 ## Configuration
 
-| Variable | Description | Required |
-|---|---|---|
-| `PREFERRED_PROVIDER` | `openai` (default), `google`, or `anthropic` | No |
-| `BIG_MODEL` | Model for opus requests | No |
-| `MEDIUM_MODEL` | Model for sonnet requests | No |
-| `SMALL_MODEL` | Model for haiku requests | No |
-| `OPENAI_API_KEY` | OpenAI API key | If using OpenAI |
-| `OPENAI_BASE_URL` | Custom OpenAI-compatible base URL | No |
-| `GEMINI_API_KEY` | Google AI Studio API key | If using Google without OAuth/Vertex |
-| `ANTHROPIC_API_KEY` | Anthropic API key | If using Anthropic |
-| `USE_GEMINI_OAUTH` | Set `true` for Google Code Assist OAuth | No |
-| `GEMINI_OAUTH_CREDS_PATH` | Path to OAuth creds JSON (default: `~/.gemini/oauth_creds.json`) | No |
-| `USE_VERTEX_AUTH` | Set `true` for Vertex AI ADC auth | No |
-| `VERTEX_PROJECT` | Google Cloud project ID | If using Vertex |
-| `VERTEX_LOCATION` | Google Cloud region (e.g. `us-central1`) | If using Vertex |
-| `DEBUG` | Set `true` for verbose logging | No |
+Configuration lives in `config.yaml` (copied from `config.example.yaml`). All values can also be set via environment variables — env vars always take priority.
+
+### Providers
+
+| Provider | Description |
+|---|---|
+| `openai` | OpenAI API |
+| `openai-compat` | Any OpenAI-compatible API (Ollama, LM Studio, vLLM, llama.cpp, …) |
+| `google-api` | Google AI Studio (API key) |
+| `google-oauth` | Google Code Assist via OAuth (free, no billing) |
+| `google-vertex` | Google Cloud Vertex AI (ADC) |
+| `anthropic` | Anthropic API (transparent proxy, no model remapping) |
+
+### Environment variable overrides
+
+| Variable | Description |
+|---|---|
+| `PREFERRED_PROVIDER` | Active provider (see table above) |
+| `BIG_MODEL` | Override model for opus requests |
+| `MEDIUM_MODEL` | Override model for sonnet requests |
+| `SMALL_MODEL` | Override model for haiku requests |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `OPENAI_BASE_URL` | Base URL for `openai-compat` |
+| `GEMINI_API_KEY` | Google AI Studio API key |
+| `ANTHROPIC_API_KEY` | Anthropic API key |
+| `GEMINI_OAUTH_CREDS_PATH` | Path to OAuth creds (default: `~/.gemini/oauth_creds.json`) |
+| `GEMINI_OAUTH_CLIENT_ID` | OAuth client ID (auto-extracted from gemini-cli if not set) |
+| `GEMINI_OAUTH_CLIENT_SECRET` | OAuth client secret (auto-extracted from gemini-cli if not set) |
+| `VERTEX_PROJECT` | Google Cloud project ID |
+| `VERTEX_LOCATION` | Google Cloud region (e.g. `us-central1`) |
+| `DEBUG` | Set `true` for verbose logging |
 
 ## Model Mapping
 
 The proxy maps Claude model families to configurable backend models:
 
-| Claude Model | Env Var | Default (OpenAI) | Default (Google) |
+| Claude Model | Config key | Default (OpenAI) | Default (Google) |
 |---|---|---|---|
-| `*haiku*` | `SMALL_MODEL` | `gpt-5-mini` | `gemini-2.5-flash-lite` |
-| `*sonnet*` | `MEDIUM_MODEL` | `gpt-5.2` | `gemini-3-flash-preview` |
-| `*opus*` | `BIG_MODEL` | `gpt-5.3-codex` | `gemini-3.1-pro-preview` |
+| `*haiku*` | `models.small` | `gpt-5-mini` | `gemini-2.5-flash-lite` |
+| `*sonnet*` | `models.medium` | `gpt-5.2` | `gemini-3-flash-preview` |
+| `*opus*` | `models.big` | `gpt-5.3-codex` | `gemini-3.1-pro-preview` |
+
+Models are configured per-provider in `config.yaml`. `anthropic` provider passes model names through unchanged.
 
 ### Supported Models
 
@@ -133,52 +150,73 @@ The proxy maps Claude model families to configurable backend models:
 #### Gemini
 `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`
 
+#### OpenAI-compatible
+Any model name supported by your local API (e.g. `llama3.3`, `qwen3.5`, `mistral`).
+
 ### Example Configurations
 
-**OpenAI (default)**
-```dotenv
-OPENAI_API_KEY="sk-..."
-# PREFERRED_PROVIDER="openai"       # default
-# BIG_MODEL="gpt-5.3-codex"         # default
-# MEDIUM_MODEL="gpt-5.2"            # default
-# SMALL_MODEL="gpt-5-mini"          # default
+**OpenAI**
+```yaml
+provider: openai
+openai:
+  api_key: sk-...
+  models:
+    big: gpt-5.3-codex
+    medium: gpt-5.2
+    small: gpt-5-mini
 ```
 
-**Google with API key**
-```dotenv
-GEMINI_API_KEY="your-key"
-PREFERRED_PROVIDER="google"
-BIG_MODEL="gemini-3.1-pro-preview"
-MEDIUM_MODEL="gemini-3-flash-preview"
-SMALL_MODEL="gemini-2.5-flash-lite"
+**Local LLM via Ollama**
+```yaml
+provider: openai-compat
+openai-compat:
+  base_url: http://localhost:11434/v1
+  api_key: ""
+  models:
+    big: qwen3.5
+    medium: qwen3.5
+    small: qwen3.5
 ```
 
-**Google with OAuth (free, no API key)**
-```dotenv
-PREFERRED_PROVIDER="google"
-USE_GEMINI_OAUTH=true
-BIG_MODEL="gemini-3.1-pro-preview"
-MEDIUM_MODEL="gemini-3-flash-preview"
-SMALL_MODEL="gemini-2.5-flash-lite"
+**Google AI Studio**
+```yaml
+provider: google-api
+google-api:
+  api_key: your-google-ai-studio-key
+  models:
+    big: gemini-3.1-pro-preview
+    medium: gemini-3-flash-preview
+    small: gemini-2.5-flash-lite
 ```
-> Requires [gemini-cli](https://github.com/google-gemini/gemini-cli): `npm i -g @google/gemini-cli && gemini` (run once to authenticate). Uses the Google Code Assist endpoint — no API key or GCP billing needed. OAuth tokens are refreshed automatically — the proxy extracts `client_id`/`client_secret` from gemini-cli (works with both user and sudo installs).
 
-**Google with Vertex AI (ADC)**
-```dotenv
-PREFERRED_PROVIDER="google"
-USE_VERTEX_AUTH=true
-VERTEX_PROJECT="your-gcp-project-id"
-VERTEX_LOCATION="us-central1"
-BIG_MODEL="gemini-3.1-pro-preview"
-MEDIUM_MODEL="gemini-3-flash-preview"
-SMALL_MODEL="gemini-2.5-flash-lite"
+**Google Code Assist via OAuth (free, no API key)**
+```yaml
+provider: google-oauth
+google-oauth:
+  models:
+    big: gemini-3.1-pro-preview
+    medium: gemini-3-flash-preview
+    small: gemini-2.5-flash-lite
+```
+> Requires [gemini-cli](https://github.com/google-gemini/gemini-cli): `npm i -g @google/gemini-cli && gemini` (run once to authenticate). OAuth tokens are refreshed automatically — the proxy extracts credentials from gemini-cli (works with both user and sudo installs).
+
+**Google Vertex AI (ADC)**
+```yaml
+provider: google-vertex
+google-vertex:
+  project: your-gcp-project-id
+  location: us-central1
+  models:
+    big: gemini-3.1-pro-preview
+    medium: gemini-3-flash-preview
+    small: gemini-2.5-flash-lite
 ```
 
 **Anthropic (transparent proxy)**
-```dotenv
-ANTHROPIC_API_KEY="sk-ant-..."
-PREFERRED_PROVIDER="anthropic"
-# BIG_MODEL/MEDIUM_MODEL/SMALL_MODEL are ignored in this mode
+```yaml
+provider: anthropic
+anthropic:
+  api_key: sk-ant-...
 ```
 
 ## How It Works

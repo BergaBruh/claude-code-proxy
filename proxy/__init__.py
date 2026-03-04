@@ -1,8 +1,5 @@
 """Claude Code Proxy — Anthropic API gateway to OpenAI/Gemini/Anthropic backends."""
 
-from dotenv import load_dotenv
-load_dotenv()
-
 from fastapi import FastAPI
 
 import litellm

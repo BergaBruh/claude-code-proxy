@@ -1,0 +1,64 @@
+# Claude Code Proxy — configuration file
+# Copy to config.yaml and edit as needed.
+# Environment variables always override values in this file (useful for Docker).
+
+# Primary backend provider:
+#   openai | openai-compat | google-api | google-oauth | google-vertex | anthropic
+provider: openai
+
+# claude-opus   → big model
+# claude-sonnet → medium model
+# claude-haiku  → small model
+
+# OpenAI
+openai:
+  api_key: sk-...
+  models:
+    big: gpt-5.3-codex
+    medium: gpt-5.2
+    small: gpt-5-mini
+
+# OpenAI-compatible API (Ollama, LM Studio, vLLM, llama.cpp, etc.)
+openai-compat:
+  base_url: http://localhost:11434/v1
+  api_key: ""               # often not required for local APIs
+  models:
+    big: qwen3.5
+    medium: qwen3.5
+    small: qwen3.5
+
+# Google AI Studio (API key)
+google-api:
+  api_key: your-google-ai-studio-key
+  models:
+    big: gemini-3.1-pro-preview
+    medium: gemini-3-flash-preview
+    small: gemini-2.5-flash-lite
+
+# Google Code Assist via OAuth (free, no API key or billing required)
+# One-time setup: npm i -g @google/gemini-cli && gemini
+# The proxy refreshes tokens automatically using credentials extracted from gemini-cli.
+google-oauth:
+  creds_path: ~/.gemini/oauth_creds.json
+  client_id: ""         # auto-extracted from gemini; set manually if unavailable
+  client_secret: ""     # auto-extracted from gemini; set manually if unavailable
+  models:
+    big: gemini-3.1-pro-preview
+    medium: gemini-3-flash-preview
+    small: gemini-2.5-flash-lite
+
+# Google Vertex AI (Application Default Credentials)
+google-vertex:
+  project: your-gcp-project-id
+  location: us-central1
+  models:
+    big: gemini-3.1-pro-preview
+    medium: gemini-3-flash-preview
+    small: gemini-2.5-flash-lite
+
+# Anthropic (transparent proxy - model names are passed through unchanged)
+anthropic:
+  api_key: sk-ant-...
+
+# Debug: verbose logging (includes litellm debug output)
+debug: false

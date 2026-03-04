@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional, Union, Literal
 
 from proxy.config import (
     PREFERRED_PROVIDER, BIG_MODEL, MEDIUM_MODEL, SMALL_MODEL,
-    OPENAI_MODELS, GEMINI_MODELS,
+    OPENAI_MODELS, GEMINI_MODELS, get_models_for_provider,
 )
 
 logger = logging.getLogger("proxy")
@@ -27,27 +27,30 @@ def map_model_for_provider(model_name: str, provider: str) -> str:
     elif clean_v.startswith('gemini/'):
         clean_v = clean_v[7:]
 
+    is_google = provider == "google" or provider.startswith("google-")
+    p_big, p_medium, p_small = get_models_for_provider(provider)
+
     mapped = False
     if provider == "anthropic":
         new_model = f"anthropic/{clean_v}"
         mapped = True
     elif 'haiku' in clean_v.lower():
-        if provider == "google" and SMALL_MODEL in GEMINI_MODELS:
-            new_model = f"gemini/{SMALL_MODEL}"
+        if is_google:
+            new_model = f"gemini/{p_small}"
         else:
-            new_model = f"openai/{SMALL_MODEL}"
+            new_model = f"openai/{p_small}"
         mapped = True
     elif 'sonnet' in clean_v.lower():
-        if provider == "google" and MEDIUM_MODEL in GEMINI_MODELS:
-            new_model = f"gemini/{MEDIUM_MODEL}"
+        if is_google:
+            new_model = f"gemini/{p_medium}"
         else:
-            new_model = f"openai/{MEDIUM_MODEL}"
+            new_model = f"openai/{p_medium}"
         mapped = True
     elif 'opus' in clean_v.lower():
-        if provider == "google" and BIG_MODEL in GEMINI_MODELS:
-            new_model = f"gemini/{BIG_MODEL}"
+        if is_google:
+            new_model = f"gemini/{p_big}"
         else:
-            new_model = f"openai/{BIG_MODEL}"
+            new_model = f"openai/{p_big}"
         mapped = True
     else:
         if clean_v in GEMINI_MODELS and not model_name.startswith('gemini/'):

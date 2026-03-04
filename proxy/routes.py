@@ -27,7 +27,7 @@ from proxy.logging_config import log_request_beautifully, log_error_beautifully
 
 logger = logging.getLogger("proxy")
 
-KNOWN_PROVIDERS = {"openai", "google", "anthropic"}
+KNOWN_PROVIDERS = {"openai", "openai-compat", "google", "google-api", "google-oauth", "google-vertex", "anthropic"}
 
 
 def _extract_provider_override(raw_request: Request):
@@ -442,10 +442,6 @@ def register_routes(app):
                     "model": converted_request["model"],
                     "messages": converted_request["messages"],
                 }
-
-                # Add custom base URL for OpenAI models if configured
-                if request.model.startswith("openai/") and OPENAI_BASE_URL:
-                    token_counter_args["base_url"] = OPENAI_BASE_URL
 
                 # Count tokens
                 token_count = token_counter(**token_counter_args)
