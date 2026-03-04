@@ -27,7 +27,7 @@ from proxy.logging_config import log_request_beautifully, log_error_beautifully
 
 logger = logging.getLogger("proxy")
 
-KNOWN_PROVIDERS = {"openai", "google", "anthropic"}
+KNOWN_PROVIDERS = {"openai", "openai-compat", "google", "google-api", "google-oauth", "google-vertex", "anthropic"}
 
 
 def _extract_provider_override(raw_request: Request):

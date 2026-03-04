@@ -1,6 +1,9 @@
 # Environment variables
 .env
 
+# Local config (copy of config.example.yaml with real credentials)
+config.yaml
+
 # Python
 __pycache__/
 *.py[cod]

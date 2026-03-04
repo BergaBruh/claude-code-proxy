@@ -1,41 +1,107 @@
 import os
 from pathlib import Path
+from typing import Any
 
-# Debug mode — set DEBUG=true to enable verbose logging (litellm debug included)
-DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 
-# Get API keys from environment
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# ── YAML loader ───────────────────────────────────────────────────────────────
 
-# Get Vertex AI project and location from environment (if set)
-VERTEX_PROJECT = os.environ.get("VERTEX_PROJECT", "unset")
-VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", "unset")
+def _load_yaml() -> dict:
+    """Load config.yaml from the project root, if present."""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        import yaml
+        return yaml.safe_load(config_path.read_text()) or {}
+    except Exception as e:
+        import logging
+        logging.getLogger("proxy").warning(f"Failed to load config.yaml: {e}")
+        return {}
 
-# Option to use Gemini API key instead of ADC for Vertex AI
-USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
+_yaml = _load_yaml()
 
-# Get OpenAI base URL from environment (if set)
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
-# Get preferred provider (default to openai)
-PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
+def _get(env_key: str, *yaml_path: str, default: Any = None) -> Any:
+    """Return env var if set, else the YAML value at yaml_path, else default."""
+    env_val = os.environ.get(env_key)
+    if env_val is not None:
+        return env_val
+    node = _yaml
+    for key in yaml_path:
+        if not isinstance(node, dict):
+            return default
+        node = node.get(key)
+        if node is None:
+            return default
+    return node if node is not None else default
 
-# Get model mapping configuration from environment
-# Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-5.3-codex")      # claude opus  → big
-MEDIUM_MODEL = os.environ.get("MEDIUM_MODEL", "gpt-5.2")       # claude sonnet → medium
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-5-mini")      # claude haiku  → small
 
-# Google Code Assist OAuth support
-USE_GEMINI_OAUTH = os.environ.get("USE_GEMINI_OAUTH", "False").lower() == "true"
-GEMINI_OAUTH_CREDS_PATH = Path(os.environ.get("GEMINI_OAUTH_CREDS_PATH", "~/.gemini/oauth_creds.json")).expanduser()
+def _get_bool(env_key: str, *yaml_path: str, default: bool = False) -> bool:
+    val = _get(env_key, *yaml_path, default=default)
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("1", "true", "yes")
 
-CODE_ASSIST_ENDPOINT = os.environ.get("CODE_ASSIST_ENDPOINT", "https://cloudcode-pa.googleapis.com")
-CODE_ASSIST_API_VERSION = os.environ.get("CODE_ASSIST_API_VERSION", "v1internal")
 
-# List of OpenAI models
+# ── Provider ──────────────────────────────────────────────────────────────────
+
+# Possible values: openai | google-api | google-oauth | google-vertex | anthropic
+PREFERRED_PROVIDER = (_get("PREFERRED_PROVIDER", "provider", default="openai") or "openai").lower()
+
+_is_google = PREFERRED_PROVIDER.startswith("google")
+_is_openai_compat = PREFERRED_PROVIDER == "openai-compat"
+
+# Google auth flags — derived from provider name; legacy env vars still override
+USE_GEMINI_OAUTH = _get_bool("USE_GEMINI_OAUTH") or PREFERRED_PROVIDER == "google-oauth"
+USE_VERTEX_AUTH  = _get_bool("USE_VERTEX_AUTH")  or PREFERRED_PROVIDER == "google-vertex"
+
+# ── API keys ──────────────────────────────────────────────────────────────────
+
+ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY", "anthropic",   "api_key")
+OPENAI_API_KEY    = _get("OPENAI_API_KEY",    PREFERRED_PROVIDER if _is_openai_compat else "openai", "api_key")
+GEMINI_API_KEY    = _get("GEMINI_API_KEY",    "google-api",  "api_key")
+OPENAI_BASE_URL   = _get("OPENAI_BASE_URL",   PREFERRED_PROVIDER if _is_openai_compat else "openai", "base_url")
+
+# ── Model mapping ─────────────────────────────────────────────────────────────
+
+# Defaults differ by provider family
+if _is_google:
+    _default_big, _default_medium, _default_small = "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash-lite"
+elif _is_openai_compat:
+    _default_big, _default_medium, _default_small = "llama3.3", "llama3.2", "llama3.2"
+else:
+    _default_big, _default_medium, _default_small = "gpt-5.3-codex", "gpt-5.2", "gpt-5-mini"
+
+# Read models from the active provider's section in YAML, env vars override
+BIG_MODEL    = _get("BIG_MODEL",    PREFERRED_PROVIDER, "models", "big",    default=_default_big)
+MEDIUM_MODEL = _get("MEDIUM_MODEL", PREFERRED_PROVIDER, "models", "medium", default=_default_medium)
+SMALL_MODEL  = _get("SMALL_MODEL",  PREFERRED_PROVIDER, "models", "small",  default=_default_small)
+
+# ── Google OAuth credentials ──────────────────────────────────────────────────
+
+GEMINI_OAUTH_CREDS_PATH = Path(
+    _get("GEMINI_OAUTH_CREDS_PATH", "google-oauth", "creds_path",
+         default="~/.gemini/oauth_creds.json")
+).expanduser()
+GEMINI_OAUTH_CLIENT_ID     = _get("GEMINI_OAUTH_CLIENT_ID",     "google-oauth", "client_id")
+GEMINI_OAUTH_CLIENT_SECRET = _get("GEMINI_OAUTH_CLIENT_SECRET", "google-oauth", "client_secret")
+
+# ── Vertex AI ─────────────────────────────────────────────────────────────────
+
+VERTEX_PROJECT  = _get("VERTEX_PROJECT",  "google-vertex", "project",  default="unset")
+VERTEX_LOCATION = _get("VERTEX_LOCATION", "google-vertex", "location", default="unset")
+
+# ── Code Assist endpoint ──────────────────────────────────────────────────────
+
+CODE_ASSIST_ENDPOINT    = _get("CODE_ASSIST_ENDPOINT",    default="https://cloudcode-pa.googleapis.com")
+CODE_ASSIST_API_VERSION = _get("CODE_ASSIST_API_VERSION", default="v1internal")
+
+# ── Debug ─────────────────────────────────────────────────────────────────────
+
+DEBUG = _get_bool("DEBUG", "debug")
+
+# ── Model lists ───────────────────────────────────────────────────────────────
+
 OPENAI_MODELS = [
     "gpt-5.3-codex",
     "gpt-5.2-codex",
@@ -67,10 +133,9 @@ OPENAI_MODELS = [
     "o3-mini",
     "o3-mini-high",
     "o1",
-    "o1-pro"
+    "o1-pro",
 ]
 
-# List of Gemini models
 GEMINI_MODELS = [
     "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",

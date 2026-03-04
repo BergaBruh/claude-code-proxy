@@ -27,24 +27,26 @@ def map_model_for_provider(model_name: str, provider: str) -> str:
     elif clean_v.startswith('gemini/'):
         clean_v = clean_v[7:]
 
+    is_google = provider == "google" or provider.startswith("google-")
+
     mapped = False
     if provider == "anthropic":
         new_model = f"anthropic/{clean_v}"
         mapped = True
     elif 'haiku' in clean_v.lower():
-        if provider == "google" and SMALL_MODEL in GEMINI_MODELS:
+        if is_google and SMALL_MODEL in GEMINI_MODELS:
             new_model = f"gemini/{SMALL_MODEL}"
         else:
             new_model = f"openai/{SMALL_MODEL}"
         mapped = True
     elif 'sonnet' in clean_v.lower():
-        if provider == "google" and MEDIUM_MODEL in GEMINI_MODELS:
+        if is_google and MEDIUM_MODEL in GEMINI_MODELS:
             new_model = f"gemini/{MEDIUM_MODEL}"
         else:
             new_model = f"openai/{MEDIUM_MODEL}"
         mapped = True
     elif 'opus' in clean_v.lower():
-        if provider == "google" and BIG_MODEL in GEMINI_MODELS:
+        if is_google and BIG_MODEL in GEMINI_MODELS:
             new_model = f"gemini/{BIG_MODEL}"
         else:
             new_model = f"openai/{BIG_MODEL}"
