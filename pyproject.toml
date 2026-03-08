@@ -12,5 +12,10 @@ dependencies = [
     "litellm>=1.81.11",
     "pyyaml>=6.0",
     "google-auth>=2.48.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
