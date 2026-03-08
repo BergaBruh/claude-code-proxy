@@ -147,9 +147,9 @@ The proxy maps Claude model families to configurable backend models:
 
 | Claude Model | Config key | Default (OpenAI) | Default (Google) | Default (Kimi Code) |
 | --- | --- | --- | --- | --- |
-| `*haiku*` | `models.small` | `gpt-5-mini` | `gemini-2.5-flash-lite` | `kimi-for-coding` |
-| `*sonnet*` | `models.medium` | `gpt-5.2` | `gemini-3-flash-preview` | `kimi-for-coding` |
-| `*opus*` | `models.big` | `gpt-5.3-codex` | `gemini-3.1-pro-preview` | `kimi-for-coding` |
+| `haiku` | `models.small` | `gpt-5-mini` | `gemini-2.5-flash-lite` | `kimi-for-coding` |
+| `sonnet` | `models.medium` | `gpt-5.2` | `gemini-3-flash-preview` | `kimi-for-coding` |
+| `opus` | `models.big` | `gpt-5.3-codex` | `gemini-3.1-pro-preview` | `kimi-for-coding` |
 
 Models are configured per-provider in `config.yaml`. `anthropic` provider passes model names through unchanged.
 
