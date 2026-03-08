@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional, Union, Literal
 
 from proxy.config import (
     PREFERRED_PROVIDER, BIG_MODEL, MEDIUM_MODEL, SMALL_MODEL,
-    OPENAI_MODELS, GEMINI_MODELS, get_models_for_provider,
+    OPENAI_MODELS, GEMINI_MODELS, KIMI_MODELS, get_models_for_provider,
 )
 
 logger = logging.getLogger("proxy")
@@ -26,8 +26,11 @@ def map_model_for_provider(model_name: str, provider: str) -> str:
         clean_v = clean_v[7:]
     elif clean_v.startswith('gemini/'):
         clean_v = clean_v[7:]
+    elif clean_v.startswith('kimi/'):
+        clean_v = clean_v[5:]
 
     is_google = provider == "google" or provider.startswith("google-")
+    is_kimi = provider == "kimi"
     p_big, p_medium, p_small = get_models_for_provider(provider)
 
     mapped = False
@@ -37,24 +40,33 @@ def map_model_for_provider(model_name: str, provider: str) -> str:
     elif 'haiku' in clean_v.lower():
         if is_google:
             new_model = f"gemini/{p_small}"
+        elif is_kimi:
+            new_model = f"kimi/{p_small}"
         else:
             new_model = f"openai/{p_small}"
         mapped = True
     elif 'sonnet' in clean_v.lower():
         if is_google:
             new_model = f"gemini/{p_medium}"
+        elif is_kimi:
+            new_model = f"kimi/{p_medium}"
         else:
             new_model = f"openai/{p_medium}"
         mapped = True
     elif 'opus' in clean_v.lower():
         if is_google:
             new_model = f"gemini/{p_big}"
+        elif is_kimi:
+            new_model = f"kimi/{p_big}"
         else:
             new_model = f"openai/{p_big}"
         mapped = True
     else:
         if clean_v in GEMINI_MODELS and not model_name.startswith('gemini/'):
             new_model = f"gemini/{clean_v}"
+            mapped = True
+        elif clean_v in KIMI_MODELS and not model_name.startswith('kimi/'):
+            new_model = f"kimi/{clean_v}"
             mapped = True
         elif clean_v in OPENAI_MODELS and not model_name.startswith('openai/'):
             new_model = f"openai/{clean_v}"
@@ -81,7 +93,7 @@ def _map_model(v, info, *, label="MODEL"):
     if new_model != v:
         logger.debug(f"📌 {label} MAPPING: '{original_model}' ➡️ '{new_model}'")
     else:
-        if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
+        if not v.startswith(('openai/', 'gemini/', 'anthropic/', 'kimi/')):
             logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
 
     # Store the original model in the values dictionary

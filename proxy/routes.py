@@ -11,6 +11,7 @@ from proxy.config import (
     OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY,
     OPENAI_BASE_URL, USE_GEMINI_OAUTH, USE_VERTEX_AUTH,
     VERTEX_PROJECT, VERTEX_LOCATION,
+    KIMI_API_KEY, KIMI_BASE_URL,
 )
 from proxy.models import MessagesRequest, TokenCountRequest, TokenCountResponse, map_model_for_provider
 from proxy.converters import convert_anthropic_to_litellm, convert_litellm_to_anthropic
@@ -27,7 +28,7 @@ from proxy.logging_config import log_request_beautifully, log_error_beautifully
 
 logger = logging.getLogger("proxy")
 
-KNOWN_PROVIDERS = {"openai", "openai-compat", "google", "google-api", "google-oauth", "google-vertex", "anthropic"}
+KNOWN_PROVIDERS = {"openai", "openai-compat", "google", "google-api", "google-oauth", "google-vertex", "anthropic", "kimi"}
 
 
 def _extract_provider_override(raw_request: Request):
@@ -75,6 +76,8 @@ def register_routes(app):
                 clean_model = clean_model[len("anthropic/"):]
             elif clean_model.startswith("openai/"):
                 clean_model = clean_model[len("openai/"):]
+            elif clean_model.startswith("kimi/"):
+                clean_model = clean_model[len("kimi/"):]
 
             logger.debug(f"📊 PROCESSING REQUEST: Model={request.model}, Stream={request.stream}")
 
@@ -82,7 +85,16 @@ def register_routes(app):
             litellm_request = convert_anthropic_to_litellm(request)
 
             # Determine which API key to use based on the model
-            if request.model.startswith("openai/"):
+            if request.model.startswith("kimi/"):
+                raw_kimi_model = request.model[5:]
+                litellm_request["model"] = f"openai/{raw_kimi_model}"
+                litellm_request["api_key"] = KIMI_API_KEY
+                litellm_request["base_url"] = KIMI_BASE_URL
+                # Pass through the original User-Agent so Kimi recognises this as a coding agent
+                user_agent = raw_request.headers.get("user-agent", "claude-code/1.0.0")
+                litellm_request["extra_headers"] = {"User-Agent": user_agent}
+                logger.debug(f"Using Kimi API key and base URL {KIMI_BASE_URL} for model: {raw_kimi_model}")
+            elif request.model.startswith("openai/"):
                 litellm_request["api_key"] = OPENAI_API_KEY
                 # Use custom OpenAI base URL if configured
                 if OPENAI_BASE_URL:
@@ -406,6 +418,8 @@ def register_routes(app):
                 clean_model = clean_model[len("anthropic/"):]
             elif clean_model.startswith("openai/"):
                 clean_model = clean_model[len("openai/"):]
+            elif clean_model.startswith("kimi/"):
+                clean_model = clean_model[len("kimi/"):]
 
             # Convert the messages to a format LiteLLM can understand
             converted_request = convert_anthropic_to_litellm(

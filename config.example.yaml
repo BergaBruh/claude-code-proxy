@@ -3,7 +3,7 @@
 # Environment variables always override values in this file (useful for Docker).
 
 # Primary backend provider:
-#   openai | openai-compat | google-api | google-oauth | google-vertex | anthropic
+#   openai | openai-compat | google-api | google-oauth | google-vertex | anthropic | kimi
 provider: openai
 
 # claude-opus   → big model
@@ -55,6 +55,17 @@ google-vertex:
     big: gemini-3.1-pro-preview
     medium: gemini-3-flash-preview
     small: gemini-2.5-flash-lite
+
+# Kimi Code — subscription-based coding API (https://www.kimi.com/code)
+# Get your API key at https://www.kimi.com/code/console
+# Note: tab key in Kimi Code toggles thinking mode on/off for kimi-for-coding
+kimi:
+  api_key: sk-kimi-...
+  # base_url: https://api.kimi.com/coding/v1  # default, no need to change
+  models:
+    big: kimi-for-coding
+    medium: kimi-for-coding
+    small: kimi-for-coding
 
 # Anthropic (transparent proxy - model names are passed through unchanged)
 anthropic:

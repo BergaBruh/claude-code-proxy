@@ -1,5 +1,6 @@
 import logging
 import sys
+import litellm as _litellm
 
 from proxy.config import DEBUG
 
@@ -16,7 +17,6 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
 if DEBUG:
-    import litellm as _litellm
     _litellm._turn_on_debug()
 
 
@@ -55,7 +55,7 @@ class ColorizedFormatter(logging.Formatter):
     BOLD = "\033[1m"
 
     def format(self, record):
-        if record.levelno == logging.debug and "MODEL MAPPING" in record.msg:
+        if record.levelno == logging.DEBUG and "MODEL MAPPING" in record.msg:
             # Apply colors and formatting to model mapping logs
             return f"{self.BOLD}{self.GREEN}{record.msg}{self.RESET}"
         return super().format(record)

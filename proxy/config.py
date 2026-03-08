@@ -45,11 +45,12 @@ def _get_bool(env_key: str, *yaml_path: str, default: bool = False) -> bool:
 
 # ── Provider ──────────────────────────────────────────────────────────────────
 
-# Possible values: openai | google-api | google-oauth | google-vertex | anthropic
+# Possible values: openai | openai-compat | google-api | google-oauth | google-vertex | anthropic | kimi
 PREFERRED_PROVIDER = (_get("PREFERRED_PROVIDER", "provider", default="openai") or "openai").lower()
 
 _is_google = PREFERRED_PROVIDER.startswith("google")
 _is_openai_compat = PREFERRED_PROVIDER == "openai-compat"
+_is_kimi = PREFERRED_PROVIDER == "kimi"
 
 # Google auth flags — derived from provider name; legacy env vars still override
 USE_GEMINI_OAUTH = _get_bool("USE_GEMINI_OAUTH") or PREFERRED_PROVIDER == "google-oauth"
@@ -61,6 +62,8 @@ ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY", "anthropic",   "api_key")
 OPENAI_API_KEY    = _get("OPENAI_API_KEY",    PREFERRED_PROVIDER if _is_openai_compat else "openai", "api_key")
 GEMINI_API_KEY    = _get("GEMINI_API_KEY",    "google-api",  "api_key")
 OPENAI_BASE_URL   = _get("OPENAI_BASE_URL",   PREFERRED_PROVIDER if _is_openai_compat else "openai", "base_url")
+KIMI_API_KEY      = _get("KIMI_API_KEY",      "kimi",        "api_key")
+KIMI_BASE_URL     = _get("KIMI_BASE_URL",     "kimi",        "base_url", default="https://api.kimi.com/coding/v1")
 
 # ── Model mapping ─────────────────────────────────────────────────────────────
 
@@ -69,6 +72,8 @@ if _is_google:
     _default_big, _default_medium, _default_small = "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash-lite"
 elif _is_openai_compat:
     _default_big, _default_medium, _default_small = "llama3.3", "llama3.2", "llama3.2"
+elif _is_kimi:
+    _default_big, _default_medium, _default_small = "kimi-for-coding", "kimi-for-coding", "kimi-for-coding"
 else:
     _default_big, _default_medium, _default_small = "gpt-5.3-codex", "gpt-5.2", "gpt-5-mini"
 
@@ -109,6 +114,8 @@ def get_models_for_provider(provider: str) -> tuple:
         d_big, d_med, d_small = "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-2.5-flash-lite"
     elif provider == "openai-compat":
         d_big, d_med, d_small = "llama3.3", "llama3.2", "llama3.2"
+    elif provider == "kimi":
+        d_big, d_med, d_small = "kimi-for-coding", "kimi-for-coding", "kimi-for-coding"
     else:
         d_big, d_med, d_small = "gpt-5.3-codex", "gpt-5.2", "gpt-5-mini"
 
@@ -163,4 +170,18 @@ GEMINI_MODELS = [
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
+]
+
+KIMI_MODELS = [
+    "kimi-for-coding",
+    "kimi-k2.5",
+    "kimi-k2-0905-preview",
+    "kimi-k2-0711-preview",
+    "kimi-k2-turbo-preview",
+    "kimi-k2-thinking-turbo",
+    "kimi-k2-thinking",
+    "moonshot-v1-8k",
+    "moonshot-v1-32k",
+    "moonshot-v1-128k",
+    "moonshot-v1-auto",
 ]
